@@ -1,0 +1,144 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import time
+import random
+
+app = Flask(__name__)
+CORS(app)
+
+CUDA_AVAILABLE = False
+try:
+    import cuda_solver
+    CUDA_AVAILABLE = True
+    print("[solver] CUDA solver loaded ✓")
+except ImportError:
+    pass
+
+KOCIEMBA_AVAILABLE = False
+try:
+    import kociemba
+    KOCIEMBA_AVAILABLE = True
+    print("[solver] kociemba loaded ✓")
+except ImportError:
+    pass
+
+
+def solve_cube(cube_string):
+    start = time.perf_counter()
+    if CUDA_AVAILABLE:
+        solution_str = cuda_solver.solve(cube_string)
+        solver_name = "CUDA"
+    elif KOCIEMBA_AVAILABLE:
+        solution_str = kociemba.solve(cube_string)
+        solver_name = "Kociemba (CPU)"
+    else:
+        raise RuntimeError("No solver available. Run: pip install kociemba")
+    elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+    moves = solution_str.strip().split()
+    return moves, solver_name, elapsed_ms
+
+
+ALL_MOVES = ["U", "U'", "U2", "D", "D'", "D2",
+             "R", "R'", "R2", "L", "L'", "L2",
+             "F", "F'", "F2", "B", "B'", "B2"]
+
+
+def generate_scramble(length=20):
+    scramble = []
+    last_face = None
+    for _ in range(length):
+        candidates = [m for m in ALL_MOVES if m[0] != last_face]
+        move = random.choice(candidates)
+        scramble.append(move)
+        last_face = move[0]
+    return scramble
+
+
+def apply_move(state, move):
+    face = move[0]
+    mod = move[1] if len(move) > 1 else ''
+    turns = 2 if mod == '2' else (3 if mod == "'" else 1)
+
+    def cycle(a, b, c, d):
+        state[a], state[b], state[c], state[d] = state[d], state[a], state[b], state[c]
+        
+    def rotate_face(b):
+        cycle(b, b+2, b+8, b+6)
+        cycle(b+1, b+5, b+7, b+3)
+
+    for _ in range(turns):
+        if face == 'U':
+            rotate_face(0)
+            cycle(18, 36, 45, 9); cycle(19, 37, 46, 10); cycle(20, 38, 47, 11)
+        elif face == 'D':
+            rotate_face(27)
+            cycle(24, 15, 51, 42); cycle(25, 16, 52, 43); cycle(26, 17, 53, 44)
+        elif face == 'F':
+            rotate_face(18)
+            cycle(6, 9, 29, 44); cycle(7, 12, 28, 41); cycle(8, 15, 27, 38)
+        elif face == 'B':
+            rotate_face(45)
+            cycle(2, 36, 33, 17); cycle(1, 39, 34, 14); cycle(0, 42, 35, 11)
+        elif face == 'L':
+            rotate_face(36)
+            cycle(0, 18, 27, 53); cycle(3, 21, 30, 50); cycle(6, 24, 33, 47)
+        elif face == 'R':
+            rotate_face(9)
+            cycle(8, 45, 35, 26); cycle(5, 48, 32, 23); cycle(2, 51, 29, 20)
+    return state
+
+
+def scramble_to_state(scramble_moves):
+    solved = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB"
+    state = list(solved)
+    for move in scramble_moves:
+        apply_move(state, move)
+    return ''.join(state)
+
+
+@app.route('/solve', methods=['POST'])
+def solve():
+    data = request.get_json()
+    cube_string = data.get('cube_string', '')
+    if len(cube_string) != 54:
+        return jsonify({'error': 'Invalid cube string. Must be 54 characters.'}), 400
+    
+    valid_chars = set('URFDLB')
+    if not all(c in valid_chars for c in cube_string):
+        return jsonify({'error': 'Invalid characters in cube string.'}), 400
+        
+    for c in valid_chars:
+        if cube_string.count(c) != 9:
+            return jsonify({'error': f'Color {c} does not appear exactly 9 times.'}), 400
+            
+    if cube_string == "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB":
+        return jsonify({'solution': [], 'move_count': 0, 'solver': 'N/A', 'solve_time_ms': 0})
+        
+    try:
+        moves, solver_name, elapsed_ms = solve_cube(cube_string)
+        return jsonify({'solution': moves, 'move_count': len(moves), 'solver': solver_name, 'solve_time_ms': elapsed_ms})
+    except Exception as e:
+        return jsonify({'error': f'Could not solve cube: {str(e)}'}), 400
+
+
+@app.route('/scramble', methods=['GET'])
+def scramble():
+    length = int(request.args.get('length', 20))
+    length = max(5, min(length, 30))
+    moves = generate_scramble(length)
+    cube_string = scramble_to_state(moves)
+    return jsonify({'scramble_moves': moves, 'cube_string': cube_string})
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        'status': 'ok',
+        'cuda_available': CUDA_AVAILABLE,
+        'kociemba_available': KOCIEMBA_AVAILABLE,
+        'solver': 'CUDA' if CUDA_AVAILABLE else ('Kociemba' if KOCIEMBA_AVAILABLE else 'none'),
+    })
+
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
