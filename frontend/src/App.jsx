@@ -82,6 +82,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("input");
   const [solverBackend, setSolverBackend] = useState(null);
   const [solveStats, setSolveStats] = useState(null);
+  const [comparison, setComparison] = useState(null);
   const [scrambleMoves, setScrambleMoves] = useState(null);
   const [speed, setSpeed] = useState(1);
 
@@ -127,14 +128,14 @@ export default function App() {
   const handleReset = () => {
     setFaces(makeDefaultCube());
     setSolution(null); setScrambleAlg(""); setSolveStats(null);
-    setScrambleMoves(null); setError(null);
+    setComparison(null); setScrambleMoves(null); setError(null);
     setPlayerAlg("", "");
   };
 
   const handleScramble = async () => {
     setScrambling(true); setError(null); setSolution(null); setSolveStats(null);
     try {
-      const res  = await fetch("http://localhost:5000/scramble?length=20");
+      const res  = await fetch("http://localhost:5000/scramble?length=12");
       const data = await res.json();
       setScrambleMoves(data.scramble_moves);
       setFaces(stringToFaces(data.cube_string));
@@ -150,7 +151,7 @@ export default function App() {
   };
 
   const handleSolve = async () => {
-    setLoading(true); setError(null); setSolution(null); setSolveStats(null);
+    setLoading(true); setError(null); setSolution(null); setSolveStats(null); setComparison(null);
     try {
       const res  = await fetch("http://localhost:5000/solve", {
         method: "POST",
@@ -161,6 +162,7 @@ export default function App() {
       if (data.error) { setError(data.error); setLoading(false); return; }
       setSolution(data.solution);
       setSolveStats({ moves: data.move_count, solver: data.solver, timeMs: data.solve_time_ms });
+      if (data.comparison) setComparison(data.comparison);
       // Set player: setup = scramble, alg = solution — now you can play it back!
       setPlayerAlg(scrambleAlg, data.solution.join(" "));
       playerRef.current.timestamp = "start";
@@ -352,6 +354,97 @@ export default function App() {
                       <StatCard label="ENGINE"     value={solveStats.solver?.split(" ")[0] || "?"} accent="#ff8c00" />
                     </div>
                   )}
+
+                  {comparison && comparison.cuda_ms != null && comparison.kociemba_ms != null && (() => {
+                    const cudaMs = comparison.cuda_ms;
+                    const kocMs = comparison.kociemba_ms;
+                    const cudaMoves = comparison.cuda_moves ?? 0;
+                    const kocMoves = comparison.kociemba_moves ?? 0;
+                    const maxMs = Math.max(cudaMs, kocMs, 1);
+                    const maxMoves = Math.max(cudaMoves, kocMoves, 1);
+                    const movesSaved = kocMoves - cudaMoves;
+                    return (
+                      <div style={{ padding: 14, background: "#0d0d14", border: "1px solid #1e1e2e", borderRadius: 10 }}>
+                        <div style={{ fontSize: 9, color: "#555", letterSpacing: 3, marginBottom: 14 }}>SOLVER COMPARISON</div>
+
+                        {/* ── SPEED SECTION ── */}
+                        <div style={{ fontSize: 9, color: "#333", letterSpacing: 2, marginBottom: 6 }}>SPEED</div>
+
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                          <div style={{ width: 70, fontSize: 10, color: "#00c864", letterSpacing: 1 }}>⚡ CUDA</div>
+                          <div style={{ flex: 1, height: 18, background: "#111", borderRadius: 5, overflow: "hidden" }}>
+                            <div style={{
+                              width: `${Math.max((cudaMs / maxMs) * 100, 2)}%`, height: "100%",
+                              background: "linear-gradient(90deg, #00c864, #00aa44)", borderRadius: 5,
+                              transition: "width 0.6s ease",
+                            }} />
+                          </div>
+                          <div style={{ width: 65, fontSize: 11, color: "#00c864", textAlign: "right", fontWeight: "bold" }}>{cudaMs}ms</div>
+                        </div>
+
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                          <div style={{ width: 70, fontSize: 10, color: "#ff8c00", letterSpacing: 1 }}>🧠 Kociemba</div>
+                          <div style={{ flex: 1, height: 18, background: "#111", borderRadius: 5, overflow: "hidden" }}>
+                            <div style={{
+                              width: `${Math.max((kocMs / maxMs) * 100, 2)}%`, height: "100%",
+                              background: "linear-gradient(90deg, #ff8c00, #cc6600)", borderRadius: 5,
+                              transition: "width 0.6s ease",
+                            }} />
+                          </div>
+                          <div style={{ width: 65, fontSize: 11, color: "#ff8c00", textAlign: "right", fontWeight: "bold" }}>{kocMs}ms</div>
+                        </div>
+
+                        {/* ── OPTIMALITY SECTION ── */}
+                        <div style={{ fontSize: 9, color: "#333", letterSpacing: 2, marginBottom: 6 }}>SOLUTION LENGTH</div>
+
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                          <div style={{ width: 70, fontSize: 10, color: "#00c864", letterSpacing: 1 }}>⚡ CUDA</div>
+                          <div style={{ flex: 1, height: 18, background: "#111", borderRadius: 5, overflow: "hidden" }}>
+                            <div style={{
+                              width: `${Math.max((cudaMoves / maxMoves) * 100, 4)}%`, height: "100%",
+                              background: "linear-gradient(90deg, #00c864, #00aa44)", borderRadius: 5,
+                              transition: "width 0.6s ease",
+                            }} />
+                          </div>
+                          <div style={{ width: 65, fontSize: 11, color: "#00c864", textAlign: "right", fontWeight: "bold" }}>{cudaMoves}</div>
+                        </div>
+
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                          <div style={{ width: 70, fontSize: 10, color: "#ff8c00", letterSpacing: 1 }}>🧠 Kociemba</div>
+                          <div style={{ flex: 1, height: 18, background: "#111", borderRadius: 5, overflow: "hidden" }}>
+                            <div style={{
+                              width: `${Math.max((kocMoves / maxMoves) * 100, 4)}%`, height: "100%",
+                              background: "linear-gradient(90deg, #ff8c00, #cc6600)", borderRadius: 5,
+                              transition: "width 0.6s ease",
+                            }} />
+                          </div>
+                          <div style={{ width: 65, fontSize: 11, color: "#ff8c00", textAlign: "right", fontWeight: "bold" }}>{kocMoves}</div>
+                        </div>
+
+                        {/* ── SUMMARY ── */}
+                        <div style={{
+                          display: "flex", flexDirection: "column", gap: 6,
+                          padding: "10px 12px", borderRadius: 7,
+                          background: "rgba(0,200,100,0.05)", border: "1px solid #00c86420",
+                        }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: 11, color: "#888" }}>
+                              Kociemba is <span style={{ color: "#ff8c00", fontWeight: "bold" }}>{(cudaMs / Math.max(kocMs, 0.01)).toFixed(1)}× faster</span> in raw speed
+                            </span>
+                            <span style={{ fontSize: 12, fontWeight: "bold", color: "#ff8c00" }}>−{(cudaMs - kocMs).toFixed(1)}ms</span>
+                          </div>
+                          {movesSaved > 0 && (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 11, color: "#888" }}>
+                                CUDA finds the <span style={{ color: "#00c864", fontWeight: "bold" }}>optimal solution</span>
+                              </span>
+                              <span style={{ fontSize: 12, fontWeight: "bold", color: "#00c864" }}>−{movesSaved} move{movesSaved !== 1 ? "s" : ""}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div>
                     <div style={{ fontSize: 9, color: "#444", letterSpacing: 3, marginBottom: 8 }}>ANIMATION SPEED · {speed}x</div>

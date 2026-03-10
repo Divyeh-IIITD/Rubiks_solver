@@ -38,6 +38,36 @@ def solve_cube(cube_string):
     return moves, solver_name, elapsed_ms
 
 
+def solve_both(cube_string):
+    """Run both CUDA and Kociemba solvers, return primary result + comparison."""
+    cuda_ms = None
+    kociemba_ms = None
+    cuda_moves = None
+    kociemba_moves = None
+
+    if CUDA_AVAILABLE:
+        t0 = time.perf_counter()
+        sol = cuda_solver.solve(cube_string)
+        cuda_ms = round((time.perf_counter() - t0) * 1000, 2)
+        cuda_moves = sol.strip().split() if sol.strip() else []
+
+    if KOCIEMBA_AVAILABLE:
+        t0 = time.perf_counter()
+        sol = kociemba.solve(cube_string)
+        kociemba_ms = round((time.perf_counter() - t0) * 1000, 2)
+        kociemba_moves = sol.strip().split() if sol.strip() else []
+
+    if cuda_moves is not None:
+        primary_moves, primary_solver, primary_ms = cuda_moves, "CUDA", cuda_ms
+    elif kociemba_moves is not None:
+        primary_moves, primary_solver, primary_ms = kociemba_moves, "Kociemba (CPU)", kociemba_ms
+    else:
+        raise RuntimeError("No solver available. Run: pip install kociemba")
+
+    return primary_moves, primary_solver, primary_ms, cuda_ms, kociemba_ms, \
+           len(cuda_moves) if cuda_moves else None, len(kociemba_moves) if kociemba_moves else None
+
+
 ALL_MOVES = ["U", "U'", "U2", "D", "D'", "D2",
              "R", "R'", "R2", "L", "L'", "L2",
              "F", "F'", "F2", "B", "B'", "B2"]
@@ -115,8 +145,20 @@ def solve():
         return jsonify({'solution': [], 'move_count': 0, 'solver': 'N/A', 'solve_time_ms': 0})
         
     try:
-        moves, solver_name, elapsed_ms = solve_cube(cube_string)
-        return jsonify({'solution': moves, 'move_count': len(moves), 'solver': solver_name, 'solve_time_ms': elapsed_ms})
+        moves, solver_name, elapsed_ms, cuda_ms, kociemba_ms, cuda_count, kociemba_count = solve_both(cube_string)
+        result = {
+            'solution': moves,
+            'move_count': len(moves),
+            'solver': solver_name,
+            'solve_time_ms': elapsed_ms,
+            'comparison': {
+                'cuda_ms': cuda_ms,
+                'kociemba_ms': kociemba_ms,
+                'cuda_moves': cuda_count,
+                'kociemba_moves': kociemba_count,
+            }
+        }
+        return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'Could not solve cube: {str(e)}'}), 400
 
