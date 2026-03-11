@@ -23,16 +23,16 @@ function stringToFaces(str) {
 
 const COLORS = {
   U: { hex: "#FFFFFF", label: "White" },
-  R: { hex: "#FF4500", label: "Orange" },
+  R: { hex: "#CC2200", label: "Red" },
   F: { hex: "#00AA44", label: "Green" },
   D: { hex: "#FFD700", label: "Yellow" },
-  L: { hex: "#CC2200", label: "Red" },
+  L: { hex: "#FFA500", label: "Orange" },
   B: { hex: "#1A6FCC", label: "Blue" },
 };
 
 const FACE_LABELS = {
-  U: "Top (White)", R: "Right (Orange)", F: "Front (Green)",
-  D: "Bottom (Yellow)", L: "Left (Red)", B: "Back (Blue)",
+  U: "Top (White)", R: "Right (Red)", F: "Front (Green)",
+  D: "Bottom (Yellow)", L: "Left (Orange)", B: "Back (Blue)",
 };
 
 function FaceInput({ faceKey, faceData, onChange, selectedColor }) {
@@ -114,9 +114,21 @@ export default function App() {
     };
   }, []);
 
+  const invertAlg = (alg) => {
+    if (!alg) return "";
+    return alg.trim().split(/\s+/).reverse().map(m => {
+      if (m.endsWith("'")) return m.slice(0, -1);
+      if (m.endsWith("2")) return m;
+      return m + "'";
+    }).join(" ");
+  };
+
   const setPlayerAlg = (setupAlg, solutionAlg) => {
     if (!playerRef.current) return;
-    playerRef.current.experimentalSetupAlg = setupAlg || "";
+    // If no setupAlg (e.g. hand-painted cube), use inverse of solution so
+    // the player starts at the scrambled state and plays the solution forward.
+    const setup = setupAlg || invertAlg(solutionAlg);
+    playerRef.current.experimentalSetupAlg = setup;
     playerRef.current.alg = solutionAlg || "";
     playerRef.current.timestamp = "start";
   };

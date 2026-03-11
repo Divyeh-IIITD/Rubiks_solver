@@ -10,7 +10,7 @@ py_libs = os.path.join(sys.base_exec_prefix, "libs")
 # 2. Direct NVCC compilation command for Windows
 cmd = [
     "nvcc", "-O3", "-shared",
-    "-arch=sm_75",               # Note: Use sm_86 if you have an RTX 30xx, or sm_89 for RTX 40xx
+    "-arch=sm_89",               # RTX 40xx (Ada Lovelace). Use sm_75 for RTX 20xx, sm_86 for RTX 30xx
     "-Xcompiler", "/MD",         # Tells nvcc to link against the MSVC dynamic runtime
     f'-I{py_include}',         
     f'-L{py_libs}', 

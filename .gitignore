@@ -7,9 +7,12 @@ __pycache__/
 *.lib
 *.exp
 *.obj
+*.exe
+*.dll
+*.so
 
 # Large binary data
-backend/corner_pdb.bin
+*.bin
 
 # Node
 node_modules/

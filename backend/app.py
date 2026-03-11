@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import time
 import random
+import multiprocessing
 
 app = Flask(__name__)
 CORS(app)
@@ -23,6 +24,16 @@ except ImportError:
     pass
 
 
+def _cuda_worker(cube_string, queue):
+    """Runs in a separate process so it can be killed regardless of GIL."""
+    import cuda_solver as cs
+    try:
+        result = cs.solve(cube_string)
+        queue.put(result)
+    except Exception as e:
+        queue.put(None)
+
+
 def solve_cube(cube_string):
     start = time.perf_counter()
     if CUDA_AVAILABLE:
@@ -38,18 +49,37 @@ def solve_cube(cube_string):
     return moves, solver_name, elapsed_ms
 
 
+CUDA_TIMEOUT_MS = 3000
+
+
 def solve_both(cube_string):
     """Run both CUDA and Kociemba solvers, return primary result + comparison."""
     cuda_ms = None
     kociemba_ms = None
     cuda_moves = None
     kociemba_moves = None
+    cuda_timed_out = False
 
     if CUDA_AVAILABLE:
+        queue = multiprocessing.Queue()
+        proc = multiprocessing.Process(target=_cuda_worker, args=(cube_string, queue), daemon=True)
         t0 = time.perf_counter()
-        sol = cuda_solver.solve(cube_string)
-        cuda_ms = round((time.perf_counter() - t0) * 1000, 2)
-        cuda_moves = sol.strip().split() if sol.strip() else []
+        proc.start()
+        proc.join(timeout=CUDA_TIMEOUT_MS / 1000)
+        elapsed = time.perf_counter() - t0
+
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+            cuda_timed_out = True
+            cuda_ms = round(elapsed * 1000, 2)
+            print(f"[solver] CUDA timed out after {cuda_ms} ms, falling back to Kociemba")
+        else:
+            cuda_ms = round(elapsed * 1000, 2)
+            if not queue.empty():
+                sol = queue.get_nowait()
+                if sol is not None:
+                    cuda_moves = sol.strip().split() if sol.strip() else []
 
     if KOCIEMBA_AVAILABLE:
         t0 = time.perf_counter()
@@ -57,7 +87,7 @@ def solve_both(cube_string):
         kociemba_ms = round((time.perf_counter() - t0) * 1000, 2)
         kociemba_moves = sol.strip().split() if sol.strip() else []
 
-    if cuda_moves is not None:
+    if cuda_moves is not None and not cuda_timed_out:
         primary_moves, primary_solver, primary_ms = cuda_moves, "CUDA", cuda_ms
     elif kociemba_moves is not None:
         primary_moves, primary_solver, primary_ms = kociemba_moves, "Kociemba (CPU)", kociemba_ms
