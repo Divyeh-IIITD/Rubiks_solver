@@ -81,8 +81,10 @@ export default function App() {
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("input");
   const [solverBackend, setSolverBackend] = useState(null);
+  const [backendHealth, setBackendHealth] = useState(null);
   const [solveStats, setSolveStats] = useState(null);
   const [comparison, setComparison] = useState(null);
+  const [activeEngine, setActiveEngine] = useState("CUDA");
   const [scrambleMoves, setScrambleMoves] = useState(null);
   const [speed, setSpeed] = useState(1);
 
@@ -104,8 +106,14 @@ export default function App() {
 
     fetch("http://localhost:5000/health")
       .then(r => r.json())
-      .then(d => setSolverBackend(d.solver))
-      .catch(() => setSolverBackend(null));
+      .then(d => {
+        setSolverBackend(d.solver);
+        setBackendHealth(d);
+      })
+      .catch(() => {
+        setSolverBackend(null);
+        setBackendHealth(null);
+      });
 
     return () => {
       if (containerRef.current && player) {
@@ -162,6 +170,24 @@ export default function App() {
     }
   };
 
+  const selectEngineView = (engineName) => {
+    if (!comparison) return;
+    setActiveEngine(engineName);
+    let sol = [];
+    let time = 0;
+    if (engineName === "CUDA" && comparison.cuda_solution) {
+      sol = comparison.cuda_solution;
+      time = comparison.cuda_ms;
+    } else if (engineName === "Kociemba" && comparison.kociemba_solution) {
+      sol = comparison.kociemba_solution;
+      time = comparison.kociemba_ms;
+    }
+    setSolution(sol);
+    setSolveStats({ moves: sol.length, solver: engineName, timeMs: time });
+    setPlayerAlg(scrambleAlg, sol.join(" "));
+    if (playerRef.current) playerRef.current.timestamp = "start";
+  };
+
   const handleSolve = async () => {
     setLoading(true); setError(null); setSolution(null); setSolveStats(null); setComparison(null);
     try {
@@ -173,11 +199,12 @@ export default function App() {
       const data = await res.json();
       if (data.error) { setError(data.error); setLoading(false); return; }
       setSolution(data.solution);
+      setActiveEngine(data.solver?.startsWith("CUDA") ? "CUDA" : "Kociemba");
       setSolveStats({ moves: data.move_count, solver: data.solver, timeMs: data.solve_time_ms });
       if (data.comparison) setComparison(data.comparison);
       // Set player: setup = scramble, alg = solution — now you can play it back!
       setPlayerAlg(scrambleAlg, data.solution.join(" "));
-      playerRef.current.timestamp = "start";
+      if (playerRef.current) playerRef.current.timestamp = "start";
       setActiveTab("solve");
       setLoading(false);
     } catch (e) {
@@ -238,19 +265,32 @@ export default function App() {
       `}</style>
 
       {/* Header */}
-      <header style={{ padding: "18px 32px", borderBottom: "1px solid #1a1a1a", display: "flex", alignItems: "center", gap: 16 }}>
+      <header style={{ padding: "18px 32px", borderBottom: "1px solid #1a1a1a", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
         <div style={{ fontSize: 28, fontWeight: "bold", letterSpacing: 6, background: "linear-gradient(135deg, #ff4500, #ffd700, #00aa44, #1a6fcc)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
           CUBE SOLVER
         </div>
-        <div style={{ height: 1, flex: 1, background: "linear-gradient(90deg, #2a2a2a, transparent)" }} />
-        <div style={{
-          padding: "4px 12px", borderRadius: 20,
-          background: solverBackend === "CUDA" ? "rgba(0,200,100,0.1)" : "rgba(255,140,0,0.1)",
-          border: `1px solid ${solverBackend === "CUDA" ? "#00c864" : "#ff8c00"}44`,
-          fontSize: 10, letterSpacing: 2,
-          color: solverBackend === "CUDA" ? "#00c864" : solverBackend ? "#ff8c00" : "#444",
-        }}>
-          {solverBackend ? `⚡ ${solverBackend.toUpperCase()}` : "● OFFLINE"}
+        <div style={{ height: 1, flex: 1, minWidth: 20, background: "linear-gradient(90deg, #2a2a2a, transparent)" }} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{
+            padding: "5px 12px", borderRadius: 20,
+            background: backendHealth?.cuda_available ? "rgba(0,200,100,0.12)" : "rgba(255,50,50,0.1)",
+            border: `1px solid ${backendHealth?.cuda_available ? "#00c864" : "#ff3232"}44`,
+            fontSize: 10, letterSpacing: 1.5,
+            color: backendHealth?.cuda_available ? "#00c864" : "#ff6666",
+            fontWeight: "bold",
+          }}>
+            {backendHealth?.cuda_available ? "⚡ CUDA (GPU) ONLINE" : "⚡ CUDA OFFLINE"}
+          </div>
+          <div style={{
+            padding: "5px 12px", borderRadius: 20,
+            background: backendHealth?.kociemba_available ? "rgba(255,140,0,0.12)" : "rgba(255,50,50,0.1)",
+            border: `1px solid ${backendHealth?.kociemba_available ? "#ff8c00" : "#ff3232"}44`,
+            fontSize: 10, letterSpacing: 1.5,
+            color: backendHealth?.kociemba_available ? "#ff8c00" : "#ff6666",
+            fontWeight: "bold",
+          }}>
+            {backendHealth?.kociemba_available ? "🧠 KOCIEMBA (CPU) ONLINE" : "🧠 KOCIEMBA OFFLINE"}
+          </div>
         </div>
       </header>
 
@@ -364,6 +404,36 @@ export default function App() {
                       <StatCard label="MOVES"      value={solveStats.moves}                        accent="#ffd700" />
                       <StatCard label="SOLVE TIME" value={`${solveStats.timeMs}ms`}                accent="#00aa44" />
                       <StatCard label="ENGINE"     value={solveStats.solver?.split(" ")[0] || "?"} accent="#ff8c00" />
+                    </div>
+                  )}
+
+                  {/* Engine Solution Switcher */}
+                  {comparison && comparison.cuda_solution && comparison.kociemba_solution && (
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        onClick={() => selectEngineView("CUDA")}
+                        style={{
+                          flex: 1, padding: "10px", borderRadius: 8,
+                          background: activeEngine === "CUDA" ? "rgba(0,200,100,0.18)" : "#0d0d14",
+                          border: `1px solid ${activeEngine === "CUDA" ? "#00c864" : "#222"}`,
+                          color: activeEngine === "CUDA" ? "#00c864" : "#777",
+                          cursor: "pointer", fontSize: 10, letterSpacing: 1.5, fontWeight: "bold",
+                          transition: "all 0.15s",
+                        }}>
+                        ⚡ CUDA ({comparison.cuda_moves} moves · {comparison.cuda_ms}ms)
+                      </button>
+                      <button
+                        onClick={() => selectEngineView("Kociemba")}
+                        style={{
+                          flex: 1, padding: "10px", borderRadius: 8,
+                          background: activeEngine === "Kociemba" ? "rgba(255,140,0,0.18)" : "#0d0d14",
+                          border: `1px solid ${activeEngine === "Kociemba" ? "#ff8c00" : "#222"}`,
+                          color: activeEngine === "Kociemba" ? "#ff8c00" : "#777",
+                          cursor: "pointer", fontSize: 10, letterSpacing: 1.5, fontWeight: "bold",
+                          transition: "all 0.15s",
+                        }}>
+                        🧠 KOCIEMBA ({comparison.kociemba_moves} moves · {comparison.kociemba_ms}ms)
+                      </button>
                     </div>
                   )}
 

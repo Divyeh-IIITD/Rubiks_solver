@@ -1,39 +1,33 @@
-import cuda_solver
-import kociemba
+import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+sys.path.insert(0, '.')
 import time
 import multiprocessing
-import sys
-sys.path.insert(0, '.')
-from app import scramble_to_state
-
-def cuda_worker(cube, queue):
-    import cuda_solver as cs
-    result = cs.solve(cube)
-    queue.put(result)
+from app import scramble_to_state, solve_both
 
 if __name__ == '__main__':
-    # Hard scramble that takes CUDA a long time
+    multiprocessing.freeze_support()
+    # Hard 20-move scramble that triggers CUDA timeout
     cube = scramble_to_state(['R','U','F','D','L','B','R2','U2','F2','D2','L2','B2','R','U','F','D','L','B','R2','U2'])
     print("Cube:", cube)
 
-    print("\n--- Testing CUDA with 3s timeout (multiprocessing) ---")
-    queue = multiprocessing.Queue()
-    proc = multiprocessing.Process(target=cuda_worker, args=(cube, queue), daemon=True)
+    print("\n--- Testing CUDA solve_both with timeout & fallback ---")
     t0 = time.perf_counter()
-    proc.start()
-    proc.join(timeout=3.0)
-    elapsed = round((time.perf_counter() - t0) * 1000, 2)
+    moves, solver_name, elapsed_ms, cuda_ms, kociemba_ms, cuda_count, kociemba_count = solve_both(cube)
+    total_time = round((time.perf_counter() - t0) * 1000, 2)
+    
+    print(f"Primary Solver: {solver_name}")
+    print(f"Moves: {moves} ({len(moves)} moves)")
+    print(f"Elapsed Time: {elapsed_ms} ms (Total wall clock: {total_time} ms)")
+    print(f"CUDA Time: {cuda_ms} ms, CUDA Moves: {cuda_count}")
+    print(f"Kociemba Time: {kociemba_ms} ms, Kociemba Moves: {kociemba_count}")
 
-    if proc.is_alive():
-        proc.kill()
-        proc.join()
-        print(f"CUDA timed out after {elapsed} ms — killed process")
-        print("Falling back to Kociemba...")
-        t0 = time.perf_counter()
-        ks = kociemba.solve(cube)
-        kt = round((time.perf_counter() - t0) * 1000, 2)
-        print(f"Kociemba: {ks} ({len(ks.split())} moves, {kt} ms)")
-    else:
-        sol = queue.get_nowait()
-        print(f"CUDA finished in {elapsed} ms")
-        print(f"Result: {sol} ({len(sol.split())} moves)")
+    print("\n--- Testing second solve after timeout to verify worker recovery ---")
+    easy_cube = scramble_to_state(['R', 'U', 'R\'', 'U\''])
+    moves, solver_name, elapsed_ms, cuda_ms, kociemba_ms, cuda_count, kociemba_count = solve_both(easy_cube)
+    print(f"Primary Solver: {solver_name}")
+    print(f"Solution: {moves}")
+    print(f"CUDA Time: {cuda_ms} ms, Kociemba Time: {kociemba_ms} ms")

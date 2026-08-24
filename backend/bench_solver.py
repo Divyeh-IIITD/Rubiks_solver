@@ -1,5 +1,9 @@
 """Benchmark: time the solver on various scramble lengths."""
 import sys, time
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
 sys.path.insert(0, '.')
 import cuda_solver
 

@@ -1,8 +1,17 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+import os
+import sys
 import time
 import random
+import threading
 import multiprocessing
+import queue
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
 
 app = Flask(__name__)
 CORS(app)
@@ -11,7 +20,7 @@ CUDA_AVAILABLE = False
 try:
     import cuda_solver
     CUDA_AVAILABLE = True
-    print("[solver] CUDA solver loaded ✓")
+    print("[solver] CUDA solver loaded [OK]")
 except ImportError:
     pass
 
@@ -19,68 +28,98 @@ KOCIEMBA_AVAILABLE = False
 try:
     import kociemba
     KOCIEMBA_AVAILABLE = True
-    print("[solver] kociemba loaded ✓")
+    print("[solver] kociemba loaded [OK]")
 except ImportError:
     pass
 
 
-def _cuda_worker(cube_string, queue):
-    """Runs in a separate process so it can be killed regardless of GIL."""
-    import cuda_solver as cs
+def _cuda_persistent_worker(req_q, res_q):
+    """Long-lived worker process that keeps PDB and GPU tables pre-warmed in memory."""
     try:
-        result = cs.solve(cube_string)
-        queue.put(result)
+        import cuda_solver as cs
+        if hasattr(cs, 'init'):
+            cs.init()
+        else:
+            cs.solve("UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB")
     except Exception as e:
-        queue.put(None)
+        print(f"[solver] Worker initialization error: {e}")
+
+    while True:
+        try:
+            req = req_q.get()
+            if req is None:
+                break
+            req_id, cube_string = req
+            import cuda_solver as cs
+            sol = cs.solve(cube_string)
+            res_q.put((req_id, sol))
+        except Exception as e:
+            res_q.put((req_id, None))
 
 
-def solve_cube(cube_string):
-    start = time.perf_counter()
-    if CUDA_AVAILABLE:
-        solution_str = cuda_solver.solve(cube_string)
-        solver_name = "CUDA"
-    elif KOCIEMBA_AVAILABLE:
-        solution_str = kociemba.solve(cube_string)
-        solver_name = "Kociemba (CPU)"
-    else:
-        raise RuntimeError("No solver available. Run: pip install kociemba")
-    elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
-    moves = solution_str.strip().split()
-    return moves, solver_name, elapsed_ms
+class CudaWorkerManager:
+    def __init__(self, timeout_sec=6.0):
+        self.timeout_sec = timeout_sec
+        self.proc = None
+        self.req_q = None
+        self.res_q = None
+        self.lock = threading.Lock()
+
+    def _start_worker(self):
+        try:
+            if self.proc is not None and self.proc.is_alive():
+                self.proc.kill()
+                self.proc.join(timeout=0.5)
+        except Exception:
+            pass
+        self.req_q = multiprocessing.Queue()
+        self.res_q = multiprocessing.Queue()
+        self.proc = multiprocessing.Process(
+            target=_cuda_persistent_worker,
+            args=(self.req_q, self.res_q),
+            daemon=True
+        )
+        self.proc.start()
+
+    def solve(self, cube_string):
+        if not CUDA_AVAILABLE:
+            return None, None, False
+        with self.lock:
+            if self.proc is None or not self.proc.is_alive():
+                self._start_worker()
+
+            req_id = random.randint(1, 1000000)
+            self.req_q.put((req_id, cube_string))
+
+            t0 = time.perf_counter()
+            while time.perf_counter() - t0 < self.timeout_sec:
+                try:
+                    res_id, sol = self.res_q.get(timeout=0.05)
+                    if res_id == req_id:
+                        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+                        moves = sol.strip().split() if sol and sol.strip() else []
+                        return moves, elapsed_ms, False
+                except queue.Empty:
+                    if not self.proc.is_alive():
+                        self._start_worker()
+                        return None, None, False
+
+            # Timed out
+            elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+            print(f"[solver] CUDA timed out after {elapsed_ms} ms, falling back to Kociemba")
+            self._start_worker()
+            return None, elapsed_ms, True
 
 
-CUDA_TIMEOUT_MS = 3000
+cuda_mgr = CudaWorkerManager(timeout_sec=6.0)
 
 
 def solve_both(cube_string):
     """Run both CUDA and Kociemba solvers, return primary result + comparison."""
-    cuda_ms = None
+    cuda_moves, cuda_ms, cuda_timed_out = cuda_mgr.solve(cube_string)
+
     kociemba_ms = None
-    cuda_moves = None
     kociemba_moves = None
-    cuda_timed_out = False
-
-    if CUDA_AVAILABLE:
-        queue = multiprocessing.Queue()
-        proc = multiprocessing.Process(target=_cuda_worker, args=(cube_string, queue), daemon=True)
-        t0 = time.perf_counter()
-        proc.start()
-        proc.join(timeout=CUDA_TIMEOUT_MS / 1000)
-        elapsed = time.perf_counter() - t0
-
-        if proc.is_alive():
-            proc.kill()
-            proc.join()
-            cuda_timed_out = True
-            cuda_ms = round(elapsed * 1000, 2)
-            print(f"[solver] CUDA timed out after {cuda_ms} ms, falling back to Kociemba")
-        else:
-            cuda_ms = round(elapsed * 1000, 2)
-            if not queue.empty():
-                sol = queue.get_nowait()
-                if sol is not None:
-                    cuda_moves = sol.strip().split() if sol.strip() else []
-
     if KOCIEMBA_AVAILABLE:
         t0 = time.perf_counter()
         sol = kociemba.solve(cube_string)
@@ -95,7 +134,7 @@ def solve_both(cube_string):
         raise RuntimeError("No solver available. Run: pip install kociemba")
 
     return primary_moves, primary_solver, primary_ms, cuda_ms, kociemba_ms, \
-           len(cuda_moves) if cuda_moves else None, len(kociemba_moves) if kociemba_moves else None
+           cuda_moves, kociemba_moves
 
 
 ALL_MOVES = ["U", "U'", "U2", "D", "D'", "D2",
@@ -103,7 +142,7 @@ ALL_MOVES = ["U", "U'", "U2", "D", "D'", "D2",
              "F", "F'", "F2", "B", "B'", "B2"]
 
 
-def generate_scramble(length=20):
+def generate_scramble(length=12):
     scramble = []
     last_face = None
     for _ in range(length):
@@ -175,7 +214,7 @@ def solve():
         return jsonify({'solution': [], 'move_count': 0, 'solver': 'N/A', 'solve_time_ms': 0})
         
     try:
-        moves, solver_name, elapsed_ms, cuda_ms, kociemba_ms, cuda_count, kociemba_count = solve_both(cube_string)
+        moves, solver_name, elapsed_ms, cuda_ms, kociemba_ms, cuda_sol, kociemba_sol = solve_both(cube_string)
         result = {
             'solution': moves,
             'move_count': len(moves),
@@ -184,8 +223,10 @@ def solve():
             'comparison': {
                 'cuda_ms': cuda_ms,
                 'kociemba_ms': kociemba_ms,
-                'cuda_moves': cuda_count,
-                'kociemba_moves': kociemba_count,
+                'cuda_moves': len(cuda_sol) if cuda_sol else None,
+                'kociemba_moves': len(kociemba_sol) if kociemba_sol else None,
+                'cuda_solution': cuda_sol,
+                'kociemba_solution': kociemba_sol,
             }
         }
         return jsonify(result)
@@ -195,8 +236,8 @@ def solve():
 
 @app.route('/scramble', methods=['GET'])
 def scramble():
-    length = int(request.args.get('length', 20))
-    length = max(5, min(length, 30))
+    length = int(request.args.get('length', 12))
+    length = max(4, min(length, 30))
     moves = generate_scramble(length)
     cube_string = scramble_to_state(moves)
     return jsonify({'scramble_moves': moves, 'cube_string': cube_string})
@@ -213,4 +254,5 @@ def health():
 
 
 if __name__ == '__main__':
+    multiprocessing.freeze_support()
     app.run(debug=True, port=5000)

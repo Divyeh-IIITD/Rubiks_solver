@@ -16,6 +16,10 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include <Python.h>
 
 #define N_MOVES            18
@@ -413,31 +417,34 @@ static void generate_move_tables() {
     fprintf(stderr, "[cuda_solver] Move tables ready.\n");
 }
 
-// Decode a PDB index back to (cp[8], co[8])
-static void decode_corners(uint32_t idx, uint8_t* cp, uint8_t* co) {
-    uint32_t ori_code = idx % 2187;
-    uint32_t perm_code = idx / 2187;
-
-    // Decode orientation (base 3 for first 7; 8th is determined by sum≡0 mod 3)
-    int co_sum = 0;
-    for (int i = 6; i >= 0; i--) {
-        co[i] = (uint8_t)(ori_code % 3);
-        co_sum += co[i];
-        ori_code /= 3;
+static void resolve_pdb_path(char* out, size_t max_len) {
+#ifdef _WIN32
+    HMODULE hm = NULL;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | 
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)&generate_move_tables, &hm)) {
+        char mod_path[MAX_PATH];
+        if (GetModuleFileNameA(hm, mod_path, sizeof(mod_path))) {
+            char* last_slash = strrchr(mod_path, '\\');
+            if (!last_slash) last_slash = strrchr(mod_path, '/');
+            if (last_slash) {
+                *(last_slash + 1) = '\0';
+                snprintf(out, max_len, "%scorner_pdb.bin", mod_path);
+                FILE* f = fopen(out, "rb");
+                if (f) { fclose(f); return; }
+            }
+        }
     }
-    co[7] = (uint8_t)((3 - co_sum % 3) % 3);
-
-    // Decode permutation from Lehmer code (factorial number system)
-    uint8_t avail[8] = {0,1,2,3,4,5,6,7};
-    int n_avail = 8;
-    for (int i = 0; i < 7; i++) {
-        int digit = perm_code / h_FACT[7 - i];
-        perm_code %= h_FACT[7 - i];
-        cp[i] = avail[digit];
-        n_avail--;
-        for (int j = digit; j < n_avail; j++) avail[j] = avail[j+1];
+#endif
+    FILE* f2 = fopen("corner_pdb.bin", "rb");
+    if (f2) {
+        fclose(f2);
+        snprintf(out, max_len, "corner_pdb.bin");
+        return;
     }
-    cp[7] = avail[0];
+    if (out[0] == '\0') {
+        snprintf(out, max_len, "corner_pdb.bin");
+    }
 }
 
 // BFS-based PDB generation: scan PDB at each depth, expand neighbors
@@ -445,8 +452,10 @@ static void generate_pdb_cpu() {
     g_corner_pdb = (uint8_t*)malloc(PDB_SIZE);
     if (!g_corner_pdb) { fprintf(stderr,"[cuda_solver] OOM\n"); exit(1); }
 
+    char cache_path[512] = {0};
+    resolve_pdb_path(cache_path, sizeof(cache_path));
+
     // Try loading from disk cache
-    const char* cache_path = "corner_pdb.bin";
     FILE* cf = fopen(cache_path, "rb");
     if (cf) {
         size_t n = fread(g_corner_pdb, 1, PDB_SIZE, cf);
@@ -499,14 +508,6 @@ static void generate_pdb_cpu() {
     FILE* out2 = fopen(cache_path, "wb");
     if (out2) { fwrite(g_corner_pdb, 1, PDB_SIZE, out2); fclose(out2); }
     fprintf(stderr, "[cuda_solver] PDB complete and saved to %s.\n", cache_path);
-}
-
-// ─── CORNER INDEX FROM 54-FACELET STATE ──────────────────────────────────────
-
-static uint32_t cpu_corner_index(const uint8_t* f) {
-    uint8_t cp[8], co[8];
-    extract_corners_cpu(f, cp, co);
-    return encode_corners(cp, co);
 }
 
 // ─── GPU IDA* KERNEL ─────────────────────────────────────────────────────────
@@ -705,19 +706,20 @@ static PyObject* py_solve(PyObject* self, PyObject* args) {
             fprintf(stderr,"[cuda_solver] Depth %d — %d frontier nodes (GPU)...\n",d,h_frontier_count);
 
             if(h_frontier_count>0){
+                int chunk=200000;
+                int alloc_size = (h_frontier_count < chunk) ? h_frontier_count : chunk;
                 FrontierNode* d_frontier;
-                cudaMalloc(&d_frontier,h_frontier_count*sizeof(FrontierNode));
-                cudaMemcpy(d_frontier,h_frontier,h_frontier_count*sizeof(FrontierNode),cudaMemcpyHostToDevice);
+                cudaMalloc(&d_frontier, alloc_size * sizeof(FrontierNode));
 
                 int zero=0;
                 cudaMemcpyToSymbol(d_found_flag,&zero,sizeof(int));
 
-                int chunk=200000;
                 int total=(h_frontier_count+chunk-1)/chunk;
                 for(int i=0;i<h_frontier_count&&!g_found;i+=chunk){
                     fprintf(stderr,"\r  chunk %d/%d...",i/chunk+1,total);
                     int cur=(i+chunk>h_frontier_count)?(h_frontier_count-i):chunk;
-                    kernel_ida_search<<<(cur+255)/256,256>>>(d_frontier+i,cur,d,d_corner_pdb,d_perm_move,d_ori_move);
+                    cudaMemcpy(d_frontier, h_frontier + i, cur * sizeof(FrontierNode), cudaMemcpyHostToDevice);
+                    kernel_ida_search<<<(cur+255)/256,256>>>(d_frontier, cur, d, d_corner_pdb, d_perm_move, d_ori_move);
                     cudaDeviceSynchronize();
                     cudaMemcpyFromSymbol(&g_found,d_found_flag,sizeof(int));
                 }
@@ -747,9 +749,15 @@ static PyObject* py_health(PyObject* self, PyObject* args){
     return PyLong_FromLong(n);
 }
 
+static PyObject* py_init(PyObject* self, PyObject* args){
+    init_pdb();
+    Py_RETURN_NONE;
+}
+
 static PyMethodDef Methods[]={
-    {"solve", py_solve, METH_VARARGS,"Solve cube."},
-    {"health",py_health,METH_VARARGS,"CUDA device count."},
+    {"solve",  py_solve,  METH_VARARGS,"Solve cube."},
+    {"health", py_health, METH_VARARGS,"CUDA device count."},
+    {"init",   py_init,   METH_VARARGS,"Initialize PDB and GPU tables."},
     {NULL,NULL,0,NULL}
 };
 

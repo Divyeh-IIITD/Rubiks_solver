@@ -1,8 +1,8 @@
-"""
-Diagnose PDB consistency: load the PDB from disk, compute corner indices 
-using the VERIFIED Python tables, and check if the stored distances make sense.
-"""
 import struct, sys
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
 
 # ── Verified corner tables (from verify_tables.py) ──
 CORNERS = [

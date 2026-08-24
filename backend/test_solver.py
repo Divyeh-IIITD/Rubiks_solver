@@ -1,18 +1,14 @@
 """Quick end-to-end test for the CUDA solver."""
 import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
 sys.path.insert(0, '.')
 import cuda_solver
 
-# The PDB will auto-generate on first call (takes several minutes).
-# After that it's cached in corner_pdb.bin.
-
 print("Testing single-move scrambles...")
 print("(PDB will generate on first call if not cached)\n")
-
-# Test: U scramble → should find U' (1 move)
-# Cube string: apply U to solved state
-# Solved = UUUUUUUUURRRRRRRRR FFFFFFFFFDDDDDDDDLLLLLLLLLBBBBBBBBB
-# After U CW: top row of R,F,L,B faces rotate
 
 # Build cube strings using app.py's logic
 def apply_move(state, move):
@@ -70,6 +66,6 @@ for scramble, expected_inverse in tests:
     expected_len = 1 if "2" not in scramble else 1
     actual_len = len(result.split()) if result else 0
     status = "PASS" if actual_len == 1 else "FAIL"
-    print(f"  {status}: Scramble={scramble:3s} → Solution='{result}' (expected 1 move)")
+    print(f"  {status}: Scramble={scramble:3s} -> Solution='{result}' (expected 1 move)")
 
 print("\nDone!")
